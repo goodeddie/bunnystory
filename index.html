@@ -1,0 +1,310 @@
+<html>
+<head>
+	<script type="text/javascript" src="akihabara/gbox.js"></script>
+	<script type="text/javascript" src="akihabara/iphopad.js"></script>
+	<script type="text/javascript" src="akihabara/trigo.js"></script>
+	<script type="text/javascript" src="akihabara/toys.js"></script>
+	<script type="text/javascript" src="akihabara/help.js"></script>
+	<script type="text/javascript" src="akihabara/tool.js"></script>
+	<script type="text/javascript" src="akihabara/gamecycle.js"></script>
+	<style>BODY { -webkit-user-select:none; margin:0px}</style>
+	<meta name="viewport" content="width=device-width; initial-scale=1.0; maximum-scale=1.0; user-scalable=0;" />
+</head>
+<body>
+</body>
+	<script>
+// ---
+// Thanks to Francesco Cottone, http://www.kesiev.com/
+// ---
+	
+		var maingame;
+		var tilemaps = {}; //---------------------------------------------------*Change this to non-array*
+		var dialogues = {};
+		var currentstage; // The stage that is currently playing
+		var noface; // Used for dialogues with no faces
+		var audioserver;
+		
+		function main() {
+			gbox.setGroups(["background", "npc", "player", "enemies", "assist", "foreground", "gamecycle"]);
+			maingame = gamecycle.createMaingame("gamecycle", "gamecycle");	
+			
+			maingame.gameMenu = function() {
+				return true; // Disable the default difficulty-choice menu
+			};
+			
+			maingame.gameTitleIntroAnimation=function(reset) {
+				if (reset) {
+					toys.resetToy(this, 'rising');
+				} else {
+					gbox.blitFade(gbox.getBufferContext(),{ alpha: 1 });
+				 
+					/*toys.logos.linear(this, 'rising', {
+						image: 'logo',
+						sx:    gbox.getScreenW()/2-gbox.getImage('logo').width/2,
+						sy:    gbox.getScreenH(),
+						x:     gbox.getScreenW()/2-gbox.getImage('logo').width/2,
+						y:     20,
+						speed: 1
+					});*/
+					toys.logos.rising(this,"rising",{
+						image:"logo",
+						x:gbox.getScreenHW()-gbox.getImage("logo").hwidth,
+						y:20,
+						speed:1,
+						gapx:250,
+						reflex:0.1,
+						//audioreach:"coin"
+					});
+				}
+			};
+			
+			maingame.gameIntroAnimation = function(reset) {
+		  	if (reset) {
+		  		toys.resetToy(this, "intro-animation");
+		  	} else {
+		  		gbox.blitFade(gbox.getBufferContext(), {alpha:1});
+		  		return toys.dialogue.render(this, "intro-animation", dialogues.intro);
+		  	}
+		  };
+			
+			maingame.pressStartIntroAnimation=function(reset) {
+				if (reset) {
+					toys.resetToy(this, "default-blinker");
+				} else {
+					toys.text.blink(this, "default-blinker", gbox.getBufferContext(), {font:"small", text:"PRESS Z TO START", valign:gbox.ALIGN_MIDDLE, halign:gbox.ALIGN_CENTER, dx:0, dy:Math.floor(gbox.getScreenH()/3), dw:gbox.getScreenW(), dh:Math.floor(gbox.getScreenH()/3)*2, blinkspeed:10});
+					return gbox.keyIsHit("a");
+					}
+			};
+			
+			maingame.changeLevel=function(level) {
+				/*
+				// Cleanup the level
+				gbox.trashGroup("playerbullets");
+				gbox.trashGroup("foesbullets");
+				gbox.trashGroup("foes");
+				gbox.trashGroup("bonus");
+				gbox.trashGroup("blocks");
+				gbox.purgeGarbage(); // Since we're starting, we can purge all now
+				*/
+
+				if (level == null) level = {level:"stage1", x:100, y:100, introdialogue:true}; // First stage
+				
+				currentstage = level;
+				//maingame.hud.setValue("stage","value",currentstage); // Level name on the hud!
+
+				dialogues = {}; // Dialogues are emptied and will be loaded by bundles. Cache is not needed - each bundle contains full dialogues for the floor.
+
+				delete tilemaps.map; // Map data is wiped too and will be loaded by loadBundle. Other data in tilemaps is kept (i.e. quest status etc)
+
+				gbox.addBundle({
+					file:"bundles/bundle-" + currentstage.level + ".js",
+					onLoad:function() {
+						help.finalizeTilemap(tilemaps.map);
+						gbox.createCanvas("tileslayer", {w:tilemaps.map.w, h:tilemaps.map.h}); // Prepare map's canvas
+						gbox.blitTilemap(gbox.getCanvasContext("tileslayer"), tilemaps.map); // Render map on the canvas
+						toys.platformer.spawn(gbox.getObject("player", "player"), {x:currentstage.x, y:currentstage.y, accx:0, accy:0}); //, side:1
+						tilemaps.map.addObjects();
+						if (currentstage.introdialogue) {
+							//maingame.startDialogue("intro");
+						}
+					}
+				});
+			};
+			
+			maingame.startDialogue = function(id, pause) {
+				if ((maingame.difficulty == 0) || (!dialogues[id].istutorial)) { // Dialogues marked as tutorial are shown only on easy. This flag is in the dialogue itself
+					gbox.addObject({
+						group:"foreground",
+						id:"dialogue",
+						dialogueToRead:id,
+						pause:1 + (pause == null ? 0 : 1), // Pauses a dialog for a while
+						initialize:function() {
+							gbox.getObject("player", "player").doPause(true); // First pause the player
+						},
+						blit:function() {
+							if (this.pause) {
+								this.pause--;
+							}
+							else if (toys.dialogue.render(this, "dialogue", dialogues[this.dialogueToRead])) { // If the dialogue ended
+								if (dialogues[this.dialogueToRead].endgame) // If the dialogue is marked by "endgame"...
+									maingame.gameIsCompleted(); // The game is completed
+								else
+									gbox.getObject("player", "player").doPause(false); // Unpause the player
+									gbox.trashObject(this); // Trash the dialogue itself.
+							}
+						}
+					});
+				}
+			}
+			
+			maingame.addBackground = function() {
+				gbox.addObject({
+					id:"bg",
+					group:"background",
+					blit:function() {
+						gbox.centerCamera(gbox.getObject("player", "player"), {w:tilemaps.map.w, h:tilemaps.map.h});
+						gbox.blit(gbox.getBufferContext(), gbox.getImage("background"), {dx:0, dy:0, dw:gbox.getScreenW(), dh:gbox.getScreenH(), sourcecamera:true, parallaxx:0.5, parallaxy:0.5});
+						gbox.blit(gbox.getBufferContext(), gbox.getCanvas("tileslayer"), {dx:0, dy:0, dw:gbox.getScreenW(), dh:gbox.getScreenH(), sourcecamera:true});
+					}
+				});
+			};
+			
+			maingame.addPlayer = function() {
+				gbox.addObject({
+					id:"player",
+					group:"player",
+					tileset:"player_tiles",
+					multiplier:0,
+					stilltimer:0, // Used to block the player while doing an action
+					invultimer:0, // Custom timer that keeps the player invulnerable
+					isPaused:false, // Pauses the player during dialogues, cutscenes etc.
+			
+					initialize:function() {
+						toys.platformer.initialize(this,{
+							frames:{
+								still:{ speed:1, frames:[0] },
+								walking:{ speed:2, frames:[1,2,3,2,1] },
+								jumping:{ speed:1, frames:[2] },
+								falling:{ speed:1, frames:[0] },
+								die:{speed:1, frames:[1] }
+							}
+						});
+					},
+					
+					doPause: function(p) {
+						this.isPaused = p;
+					},
+					
+					collisionEnabled: function() {
+						return !maingame.gameIsHold() && !this.killed;
+					},
+					
+					kill: function(by) {
+						this.killed = true;
+						//gbox.hitAudio("die");
+						maingame.hud.addValue("lives", "value", -1); // Decreases lives
+						//toys.generate.sparks.bounceDie(this, "sparks", null, {jump:6, flipv:false});
+						maingame.playerDied({wait:50});
+					},
+					
+					first:function() {
+						this.counter = (this.counter + 1) % 10;
+						if (this.stilltimer || maingame.gameIsHold() || this.isPaused || this.killed) {
+							toys.platformer.horizontalKeys(this, {}); // Stay still. No key is moving! :)
+							toys.platformer.jumpKeys(this, {});
+						}
+						else {
+							toys.platformer.horizontalKeys(this, {left:"left", right:"right"});
+							toys.platformer.jumpKeys(this, {jump:"a", audiojump:"jump"});
+						}
+						
+						toys.platformer.applyGravity(this);
+						toys.platformer.verticalTileCollision(this, tilemaps.map, "map");
+						toys.platformer.horizontalTileCollision(this, tilemaps.map, "map");
+						toys.platformer.handleAccellerations(this);
+						toys.platformer.setSide(this);
+						if (!this.stilltimer && !this.killed) {
+							toys.platformer.setFrame(this);
+						}
+						
+						
+						// Multiplier reset for combos
+						if (this.touchedfloor) this.multiplier = 0;
+					},
+					blit: function() {
+						if (!this.killed)
+							gbox.blitTile(gbox.getBufferContext(), {tileset:this.tileset, tile:this.frame, dx:this.x, dy:this.y, camera:this.camera, fliph:this.side, flipv:this.flipv});
+					}
+				});
+			};
+			
+			// x,y,stillframes,dialogueproperty,questid,talkingframes,silenceframes
+			/*maingame.addNPC = function(x,y,still,dialogue,questid,talking,silence) {
+				gbox.addObject({
+					questid:questid,
+					group:"blocks",
+					tileset:"npc",
+					zindex:0, // Needed for zindexed objects
+					x:x,
+					y:y,
+					myDialogue:dialogue,
+					iamTalking:false,
+					silence:silence,
+					//shadow:{tileset:"shadows",tile:0},
+					frames:{
+						still:{ speed:6, frames:still },
+						talking:{ speed:6, frames:(talking==null?still:talking) }
+					},
+					
+					doPlayerAction:function(sw) {
+						//if (this.silence) {
+						//	toys.generate.audio.fadeOut(this,"background",null,{channel:"bgmusic"});
+						//}
+						this.iamTalking=true; // go in talking mode
+						maingame.startDialogue(this.myDialogue); // Starts its dialogue. Is another object because of z-index
+					},
+					
+					initialize:function() {
+						toys.topview.initialize(this); // Any particular initialization. Just the auto z-index
+					},
+					
+					first:function(by) {
+						this.counter=(this.counter+1)%12;
+						
+						if (this.iamTalking) {
+							this.frame=help.decideFrame(this.counter,this.frames.talking);
+							if (!gbox.getObject("foreground","dialogue")) {// Check if the dialogue ended
+								this.iamTalking=false; // Stop talking
+								if ((this.questid!=null)&&(!tilemaps.queststatus[this.questid])) {
+									tilemaps.queststatus[this.questid]=true; // If related to a quest, the quest is marked as done
+									maingame.addQuestClear();
+								}
+							}
+						} else
+							this.frame=help.decideFrame(this.counter,this.frames.still);
+					},
+					
+					
+					blit:function() {
+						if (gbox.objectIsVisible(this)) {
+							// Shadowed object. First draws the shadow...
+							//gbox.blitTile(gbox.getBufferContext(),{tileset:this.shadow.tileset,tile:this.shadow.tile,dx:this.x,dy:this.y+this.h-gbox.getTiles(this.shadow.tileset).tileh+4,camera:this.camera});
+							// Then the object. Notes that the y is y-z to have the "over the floor" effect.
+							gbox.blitTile(gbox.getBufferContext(),{tileset:this.tileset,tile:this.frame,dx:this.x,dy:this.y+this.z,camera:this.camera,fliph:this.fliph,flipv:this.flipv});
+						}
+					}
+				});
+			};*/
+			
+			maingame.initializeGame = function() {
+				tilemaps={
+					_defaultblock:100, // The block that is over the borders (a wall)
+					queststatus:{} // Every step the player does, is marked here (opened doors, sections cleared etc)
+				};
+				
+				maingame.addBackground();
+				
+				maingame.addPlayer();
+			};
+			
+			gbox.go();
+		}
+		
+		// When everything is set, play game!
+		gbox.onLoad(function() {
+			help.akihabaraInit({
+				title:"The Legend of Dumpy",
+				splash:{footnotes:["DON'T USE IE TO PLAY THIS GAME OR ELSE!", "Waka waka.", "Waka?", ""]},
+				width: 320,
+				height: 240,
+				zoom: 2
+				});
+			
+			noface = {noone:{x:10, y:170,box:{x:0, y:160, w:gbox.getScreenW(), h:60, alpha:0.5}}};
+			
+			gbox.addBundle({file:"bundles/bundle.js"}); // Audio, sprites, fonts etc. are loaded here
+
+			gbox.loadAll(main);
+		}, false);
+	</script>
+</html>
